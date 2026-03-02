@@ -1,312 +1,533 @@
-import React, { useEffect, useState } from 'react';
-import NodeModal from './components/NodeModal';
-import { v4 } from 'uuid';
-import Tree from 'react-d3-tree';
-import { RawNodeDatum, TreeNodeDatum, CustomNodeElementProps } from 'react-d3-tree';
+import React, { useState, useEffect } from 'react';
+import { Plus, Crown, X } from 'lucide-react';
+import { User, Member, MemberFormData, FamilyRoot } from './types/types';
+import { PLANS } from './constants/constants';
+import { AuthService } from './services/AuthService';
+import { LoginView } from './components/LoginView';
+import { UpgradeModal } from './components/UpgradeModal';
+import { Header } from './components/Header';
+import { StatsCards } from './components/StatsCards';
+import { DashboardView } from './components/DashboardView';
+import { MemberModal } from './components/MemberModal';
 
-export function bfs(idParam: any, tree: RawNodeDatum | RawNodeDatum[], node: RawNodeDatum) {
-  const id = String(idParam);
-  const queue: RawNodeDatum[] = [];
-  queue.unshift(tree as RawNodeDatum);
-  while (queue.length > 0) {
-    const curNode = queue.pop();
-    if (String(curNode.attributes?.id) === id) {
-      curNode.children.push(node);
-      return { ...tree };
-    }
-    for (let i = 0; i < curNode.children.length; i++) {
-      queue.unshift(curNode.children[i]);
-    }
-  }
-}
+const FamilyTreeApp: React.FC = () => {
+  const [user, setUser] = useState<User | null>(null);
+  const [view, setView] = useState<'login' | 'dashboard'>('login');
+  const [members, setMembers] = useState<Member[]>([]);
+  const [familyRoot, setFamilyRoot] = useState<FamilyRoot>({ familyName: 'Smith Family', createdDate: new Date().toISOString() });
+  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
+  const [selectedParent, setSelectedParent] = useState<Member | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showFamilyNameModal, setShowFamilyNameModal] = useState(false);
+  const [tempFamilyName, setTempFamilyName] = useState('');
 
-export function renameNode(idParam: any, tree: RawNodeDatum | RawNodeDatum[], newName: string) {
-  const id = String(idParam);
-  const queue: RawNodeDatum[] = [];
-  queue.unshift(tree as RawNodeDatum);
-  while (queue.length > 0) {
-    const curNode = queue.pop();
-    if (String(curNode.attributes?.id) === id) {
-      curNode.name = newName;
-      return { ...tree };
-    }
-    for (let i = 0; i < curNode.children.length; i++) {
-      queue.unshift(curNode.children[i]);
-    }
-  }
-}
-
-export function addSpouse(idParam: any, tree: RawNodeDatum | RawNodeDatum[], spouseName: string) {
-  const id = String(idParam);
-  const queue: RawNodeDatum[] = [];
-  queue.unshift(tree as RawNodeDatum);
-  while (queue.length > 0) {
-    const curNode = queue.pop();
-    if (String(curNode.attributes?.id) === id) {
-      const attrs: any = curNode.attributes;
-      if (attrs.spouseName && !attrs.spouseNames) {
-        attrs.spouseNames = [attrs.spouseName];
-        delete attrs.spouseName;
-      }
-      if (!attrs.spouseNames) attrs.spouseNames = [];
-      attrs.spouseNames.push(spouseName);
-      return { ...tree };
-    }
-    for (let i = 0; i < curNode.children.length; i++) queue.unshift(curNode.children[i]);
-  }
-}
-
-export function removeSpouse(idParam: any, tree: RawNodeDatum | RawNodeDatum[], spouseName: string) {
-  const id = String(idParam);
-  const queue: RawNodeDatum[] = [];
-  queue.unshift(tree as RawNodeDatum);
-  while (queue.length) {
-    const curNode = queue.pop();
-    if (String(curNode.attributes?.id) === id) {
-      const attrs: any = curNode.attributes;
-      if (attrs.spouseNames && Array.isArray(attrs.spouseNames)) {
-        attrs.spouseNames = attrs.spouseNames.filter((n: string) => n !== spouseName);
-        return { ...tree };
-      }
-      if (attrs.spouseName === spouseName) {
-        delete attrs.spouseName; // legacy single spouse removal
-        return { ...tree };
-      }
-    }
-    for (let i = 0; i < curNode.children.length; i++) queue.unshift(curNode.children[i]);
-  }
-}
-
-export function deleteNode(idParam: any, tree: RawNodeDatum | RawNodeDatum[]) {
-  const id = String(idParam);
-  const root = tree as RawNodeDatum;
-  if (String(root.attributes?.id) === id) return undefined;
-  const queue: RawNodeDatum[] = [];
-  queue.unshift(root);
-  while (queue.length) {
-    const cur = queue.pop();
-    for (let i = 0; i < cur.children.length; i++) {
-      const child = cur.children[i];
-      if (String(child.attributes?.id) === id) {
-        cur.children.splice(i, 1);
-        return { ...tree };
-      }
-      queue.unshift(child);
-    }
-  }
-  return undefined;
-}
-
-const LOCAL_KEY = 'family-tree-data-v1';
-
-const App: React.FC = () => {
-  const [tree, setTree] = useState<RawNodeDatum | RawNodeDatum[]>({
-    name: 'Root',
-    attributes: { id: 'root-1' },
-    children: []
+  const [formData, setFormData] = useState<MemberFormData>({
+    firstName: '',
+    lastName: '',
+    birthDate: '',
+    deathDate: '',
+    gender: '',
+    parentId: null,
+    relationship: '',
+    spouseIds: [],
+    notes: ''
   });
-  const [node, setNode] = useState<TreeNodeDatum | undefined>();
-  const [zoom, setZoom] = useState<number>(1);
-  const [translate, setTranslate] = useState<{ x: number, y: number }>({ x: 300, y: 100 });
-  const treeContainerRef = React.useRef<HTMLDivElement | null>(null);
-  const [importError, setImportError] = useState<string>('');
 
-  // Load from localStorage on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(LOCAL_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.name && parsed.children) {
-          setTree(parsed);
-        }
-      }
-    } catch (e) {
-      // ignore malformed data
+    if (user) {
+      loadFamilyData();
     }
-  }, []);
+  }, [user]);
 
-  // Persist on tree change
-  useEffect(() => {
-    try {
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(tree));
-    } catch (e) {
-      // storage may fail silently
+  const loadFamilyData = () => {
+    if (!user) return;
+
+    const stored = localStorage.getItem(`family_${user.id}`);
+    const storedRoot = localStorage.getItem(`family_root_${user.id}`);
+
+    if (storedRoot) {
+      setFamilyRoot(JSON.parse(storedRoot));
     }
-  }, [tree]);
 
-  // Handle clicks from custom node rendering (TreeNodeDatum)
-  const handleCustomNodeClick = (datum: TreeNodeDatum) => setNode(datum);
-  // Handle clicks from react-d3-tree's onNodeClick (HierarchyPointNode)
-  const handleTreeNodeClick = (hierarchyNode: any) => {
-    if (hierarchyNode && hierarchyNode.data) setNode(hierarchyNode.data as TreeNodeDatum);
-  };
-  const close = () => setNode(undefined);
-
-  const handleAddChild = (name: string) => {
-    if (!node) return;
-    const newTree = bfs(String(node.attributes?.id), tree, { name, attributes: { id: v4() }, children: [] });
-    if (newTree) setTree(newTree);
-    close();
-  };
-  const handleEditName = (newName: string) => {
-    if (!node) return;
-    const newTree = renameNode(String(node.attributes?.id), tree, newName);
-    if (newTree) setTree(newTree);
-    close();
-  };
-  const handleAddSpouse = (spouseName: string) => {
-    if (!node) return;
-    const newTree = addSpouse(String(node.attributes?.id), tree, spouseName);
-    if (newTree) setTree(newTree);
-    close();
-  };
-  const handleDeleteNode = () => {
-    if (!node) return;
-    const updated = deleteNode(String(node.attributes?.id), tree);
-    if (updated) setTree(updated);
-    close();
-  };
-
-  const handleRemoveSpouse = (spouseName: string) => {
-    if (!node) return;
-    const updated = removeSpouse(String(node.attributes?.id), tree, spouseName);
-    if (updated) setTree(updated);
-  };
-
-  const downloadJSON = () => {
-    const dataStr = JSON.stringify(tree, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'family-tree.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setImportError('');
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const parsed = JSON.parse(String(evt.target?.result));
-        if (parsed && parsed.name && Array.isArray(parsed.children)) {
-          setTree(parsed);
-        } else {
-          setImportError('Invalid tree schema');
+    if (stored) {
+      const parsedMembers = JSON.parse(stored);
+      // Migration: Convert spouseId to spouseIds
+      const migratedMembers = parsedMembers.map((m: any) => ({
+        ...m,
+        spouseIds: m.spouseIds || (m.spouseId ? [m.spouseId] : []),
+        spouseId: undefined // Remove old field
+      }));
+      setMembers(migratedMembers);
+    } else {
+      // Initialize with sample hierarchical data
+      const sample: Member[] = [
+        {
+          id: 1,
+          firstName: 'Robert',
+          lastName: 'Smith',
+          birthDate: '1945-03-15',
+          gender: 'male',
+          relationship: 'Grandfather',
+          parentId: null,
+          spouseIds: [2],
+          children: [3, 4]
+        },
+        {
+          id: 2,
+          firstName: 'Mary',
+          lastName: 'Smith',
+          birthDate: '1947-07-22',
+          gender: 'female',
+          relationship: 'Grandmother',
+          parentId: null,
+          spouseIds: [1],
+          children: [3, 4]
+        },
+        {
+          id: 3,
+          firstName: 'John',
+          lastName: 'Smith',
+          birthDate: '1970-11-10',
+          gender: 'male',
+          relationship: 'Father',
+          parentId: 1,
+          spouseIds: [5],
+          children: [6, 7]
+        },
+        {
+          id: 4,
+          firstName: 'Sarah',
+          lastName: 'Smith',
+          birthDate: '1972-05-18',
+          gender: 'female',
+          relationship: 'Aunt',
+          parentId: 1,
+          children: [8],
+          spouseIds: []
+        },
+        {
+          id: 5,
+          firstName: 'Jennifer',
+          lastName: 'Smith',
+          birthDate: '1972-09-25',
+          gender: 'female',
+          relationship: 'Mother',
+          parentId: null,
+          spouseIds: [3],
+          children: [6, 7]
+        },
+        {
+          id: 6,
+          firstName: 'Michael',
+          lastName: 'Smith',
+          birthDate: '1995-04-12',
+          gender: 'male',
+          relationship: 'Son',
+          parentId: 3,
+          children: [],
+          spouseIds: []
+        },
+        {
+          id: 7,
+          firstName: 'Emily',
+          lastName: 'Smith',
+          birthDate: '1998-08-30',
+          gender: 'female',
+          relationship: 'Daughter',
+          parentId: 3,
+          children: [],
+          spouseIds: []
+        },
+        {
+          id: 8,
+          firstName: 'David',
+          lastName: 'Smith',
+          birthDate: '2000-12-05',
+          gender: 'male',
+          relationship: 'Cousin',
+          parentId: 4,
+          children: [],
+          spouseIds: []
         }
-      } catch (err) {
-        setImportError('Failed to parse JSON');
-      }
+      ];
+      setMembers(sample);
+      localStorage.setItem(`family_${user.id}`, JSON.stringify(sample));
+    }
+  };
+
+  const saveFamilyData = (data: Member[]) => {
+    if (!user) return;
+    localStorage.setItem(`family_${user.id}`, JSON.stringify(data));
+    setMembers(data);
+  };
+
+  const saveFamilyRoot = (root: FamilyRoot) => {
+    if (!user) return;
+    localStorage.setItem(`family_root_${user.id}`, JSON.stringify(root));
+    setFamilyRoot(root);
+  };
+
+  const handleLogin = async (email: string, password: string) => {
+    const loggedUser = await AuthService.login(email, password);
+    setUser(loggedUser);
+    setView('dashboard');
+  };
+
+  const handleLogout = () => {
+    AuthService.logout();
+    setUser(null);
+    setView('login');
+    setMembers([]);
+  };
+
+  const canAddMember = () => {
+    if (!user) return false;
+    const plan = PLANS[user.subscription];
+    return plan.members === -1 || members.length < plan.members;
+  };
+
+  const resetForm = () => {
+    setFormData({
+      firstName: '',
+      lastName: '',
+      birthDate: '',
+      deathDate: '',
+      gender: '',
+      parentId: null,
+      relationship: '',
+      spouseIds: [],
+      notes: ''
+    });
+    setSelectedParent(null);
+    setSelectedMember(null);
+  };
+
+  const openAddModal = (parentMember: Member | null = null) => {
+    if (!canAddMember()) {
+      setShowUpgrade(true);
+      return;
+    }
+    setSelectedParent(parentMember);
+    setFormData({
+      firstName: '',
+      lastName: '',
+      birthDate: '',
+      deathDate: '',
+      gender: '',
+      parentId: parentMember?.id || null,
+      relationship: '',
+      spouseIds: [],
+      notes: ''
+    });
+    setShowAddModal(true);
+  };
+
+  const addMember = () => {
+    if (!user) return;
+    if (!formData.firstName || !formData.lastName) {
+      alert('Please fill in first and last name');
+      return;
+    }
+
+    const newMember: Member = {
+      id: Date.now(),
+      firstName: formData.firstName,
+      lastName: formData.lastName,
+      birthDate: formData.birthDate,
+      deathDate: formData.deathDate,
+      gender: formData.gender as 'male' | 'female' | 'other',
+      parentId: selectedParent ? selectedParent.id : null,
+      relationship: formData.relationship,
+      spouseIds: formData.spouseIds || [],
+      notes: formData.notes,
+      children: []
     };
-    reader.readAsText(file);
+
+    let updatedMembers = [...members, newMember];
+
+    // If adding a child, update parent's children array
+    if (selectedParent) {
+      updatedMembers = updatedMembers.map(m =>
+        m.id === selectedParent.id
+          ? { ...m, children: [...(m.children || []), newMember.id] }
+          : m
+      );
+    }
+
+    // Handle spouse linking
+    if (newMember.spouseIds && newMember.spouseIds.length > 0) {
+      updatedMembers = updatedMembers.map(m => {
+        if (newMember.spouseIds?.includes(m.id)) {
+          // Add new member to spouse's spouseIds if not already there
+          const currentSpouses = m.spouseIds || [];
+          if (!currentSpouses.includes(newMember.id)) {
+            return { ...m, spouseIds: [...currentSpouses, newMember.id] };
+          }
+        }
+        return m;
+      });
+    }
+
+    saveFamilyData(updatedMembers);
+    setShowAddModal(false);
+    resetForm();
   };
 
-  const resetZoom = () => setZoom(1);
+  const editMember = (member: Member) => {
+    setSelectedMember(member);
+    setFormData({
+      firstName: member.firstName,
+      lastName: member.lastName,
+      birthDate: member.birthDate,
+      deathDate: member.deathDate || '',
+      gender: member.gender,
+      parentId: member.parentId,
+      relationship: member.relationship || '',
+      notes: member.notes || '',
+      spouseIds: member.spouseIds || []
+    });
+    setShowEditModal(true);
+  };
 
-  const renderCustomNode = (customProps: CustomNodeElementProps, click: (d: TreeNodeDatum) => void) => {
-    const { nodeDatum } = customProps;
-    const attrs: any = nodeDatum.attributes || {};
-    const spouseNames: string[] = Array.isArray(attrs.spouseNames) ? attrs.spouseNames : attrs.spouseName ? [attrs.spouseName] : [];
-    const baseY = 4;
-    const mainFill = '#2D3748';
-    const spouseFill = '#4A5568';
-    return (
-      <g className="group">
-        <g onClick={() => click(nodeDatum)} style={{ cursor: 'pointer' }}>
-          <defs>
-            <linearGradient id={`grad-${attrs.id || nodeDatum.name}`} x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#3182CE" />
-              <stop offset="100%" stopColor="#2C5282" />
-            </linearGradient>
-          </defs>
-          <circle r={26} cx={0} fill={spouseNames.length ? 'url(#grad-' + (attrs.id || nodeDatum.name) + ')' : '#2B6CB0'} stroke="#CBD5E0" strokeWidth={2} className="transition group-hover:scale-105 group-active:scale-95 drop-shadow" />
-          <text fill="#F7FAFC" fontSize={12} fontWeight={600} textAnchor="middle" x={0} y={baseY}>{nodeDatum.name}</text>
-          {spouseNames.map((sn, i) => {
-            const spacing = 70; const x = (i + 1) * spacing;
-            return (
-              <g key={i}>
-                <circle r={24} cx={x} fill={spouseFill} stroke="#CBD5E0" strokeWidth={2} className="transition group-hover:scale-105 group-active:scale-95" />
-                <text fill="#F7FAFC" fontSize={11} textAnchor="middle" x={x} y={baseY}>{sn}</text>
-                <line x1={26} y1={0} x2={x - 24} y2={0} stroke="#718096" strokeWidth={3} className="opacity-80" />
-              </g>
-            );
-          })}
-        </g>
-        {spouseNames.length > 0 && (
-          <g transform={`translate(0,40)`}>
-            <rect x={-38} y={-16} width={80 + spouseNames.length * 10} height={24} rx={12} fill="#2D3748" stroke="#4A5568" className="group-hover:stroke-brand-500 transition" />
-            <text x={0} y={2} textAnchor="middle" fill="#E2E8F0" fontSize={11} className="font-medium">{spouseNames.length} spouse{spouseNames.length > 1 ? 's' : ''}</text>
-          </g>
-        )}
-      </g>
+  const updateMember = () => {
+    if (!selectedMember || !user) return;
+    if (!formData.firstName || !formData.lastName) {
+      alert('Please fill in first and last name');
+      return;
+    }
+
+    const updatedMember: Member = {
+      ...selectedMember,
+      firstName: formData.firstName,
+      lastName: formData.lastName,
+      birthDate: formData.birthDate,
+      deathDate: formData.deathDate,
+      gender: formData.gender as 'male' | 'female' | 'other',
+      relationship: formData.relationship,
+      spouseIds: formData.spouseIds || [],
+      notes: formData.notes
+    };
+
+    let updatedMembers = members.map(m =>
+      m.id === selectedMember.id ? updatedMember : m
     );
+
+    // Handle spouse linking changes
+    // 1. Remove from spouses that were removed
+    const oldSpouses = selectedMember.spouseIds || [];
+    const newSpouses = updatedMember.spouseIds || [];
+
+    const removedSpouses = oldSpouses.filter(id => !newSpouses.includes(id));
+    const addedSpouses = newSpouses.filter(id => !oldSpouses.includes(id));
+
+    updatedMembers = updatedMembers.map(m => {
+      // If this member was removed as a spouse
+      if (removedSpouses.includes(m.id)) {
+        return {
+          ...m,
+          spouseIds: (m.spouseIds || []).filter(id => id !== selectedMember.id)
+        };
+      }
+      // If this member was added as a spouse
+      if (addedSpouses.includes(m.id)) {
+        const currentSpouses = m.spouseIds || [];
+        if (!currentSpouses.includes(updatedMember.id)) {
+          return { ...m, spouseIds: [...currentSpouses, updatedMember.id] };
+        }
+      }
+      return m;
+    });
+
+    saveFamilyData(updatedMembers);
+    setShowEditModal(false);
+    setSelectedMember(null);
+    resetForm();
   };
 
-  // Custom dark mode (replaces Chakra color mode)
-  const [dark, setDark] = useState<boolean>(() => {
-    try { return localStorage.getItem('dark-mode') === '1'; } catch { return false; }
-  });
-  useEffect(() => {
-    const root = document.documentElement;
-    if (dark) root.classList.add('dark'); else root.classList.remove('dark');
-    try { localStorage.setItem('dark-mode', dark ? '1' : '0'); } catch { }
-  }, [dark]);
-  const toggleDark = () => setDark(d => !d);
+  const deleteMember = (memberId: number) => {
+    if (!confirm('Are you sure you want to delete this member and all their descendants?')) {
+      return;
+    }
+
+    const getDescendants = (id: number): number[] => {
+      const member = members.find(m => m.id === id);
+      if (!member) return [id];
+
+      let descendants = [id];
+      (member.children || []).forEach(childId => {
+        descendants = [...descendants, ...getDescendants(childId)];
+      });
+      return descendants;
+    };
+
+    const toDelete = getDescendants(memberId);
+    const updated = members.filter(m => !toDelete.includes(m.id));
+
+    // Remove from parent's children array and spouses
+    updated.forEach(m => {
+      if (m.children) {
+        m.children = m.children.filter(cid => !toDelete.includes(cid));
+      }
+      if (m.spouseIds) {
+        m.spouseIds = m.spouseIds.filter(sid => !toDelete.includes(sid));
+      }
+    });
+
+    saveFamilyData(updated);
+  };
+
+  const handleAddChild = (parentId: number | null) => {
+    const parent = parentId ? members.find(m => m.id === parentId) : null;
+    openAddModal(parent);
+  };
+
+  const handleEditFamilyName = () => {
+    setTempFamilyName(familyRoot.familyName);
+    setShowFamilyNameModal(true);
+  };
+
+  const saveFamilyName = () => {
+    if (!tempFamilyName.trim()) {
+      alert('Please enter a family name');
+      return;
+    }
+    saveFamilyRoot({ ...familyRoot, familyName: tempFamilyName });
+    setShowFamilyNameModal(false);
+  };
+
+  const upgradePlan = (planType: 'free' | 'premium' | 'family') => {
+    if (!user) return;
+    setUser({ ...user, subscription: planType });
+    setShowUpgrade(false);
+    alert(`Successfully upgraded to ${PLANS[planType].name} plan!`);
+  };
+
+  // LOGIN VIEW
+  if (view === 'login') {
+    return <LoginView onLogin={handleLogin} />;
+  }
+
+  // UPGRADE MODAL
+  if (showUpgrade && user) {
+    return (
+      <UpgradeModal
+        user={user}
+        onUpgrade={upgradePlan}
+        onClose={() => setShowUpgrade(false)}
+      />
+    );
+  }
+
+  // MAIN APP
+  if (!user) return null;
 
   return (
-    <div className="flex flex-col gap-4 w-full h-screen p-3 bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-950 transition-colors">
-      <div className="flex flex-wrap items-center gap-3 rounded-md p-2 bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700">
-        <button onClick={downloadJSON} title="Download current tree JSON" className="flex items-center gap-1 px-3 py-2 text-xs font-semibold rounded-md bg-blue-600 hover:bg-blue-500 text-white">
-          <span>Export</span>
-        </button>
-        <button onClick={() => setTree({ name: 'Root', attributes: { id: v4() }, children: [] })} title="Start a new root" className="flex items-center gap-1 px-3 py-2 text-xs font-semibold rounded-md bg-green-600 hover:bg-green-500 text-white">
-          <span>New</span>
-        </button>
-        <input type="file" accept="application/json" onChange={handleFileImport} title="Import tree JSON" className="file:mr-2 file:py-1 file:px-2 file:border file:rounded file:bg-slate-100 dark:file:bg-slate-700 file:text-xs hover:file:bg-slate-200 dark:hover:file:bg-slate-600 text-xs" />
-        <div className="flex items-center gap-1">
-          <button aria-label="Zoom in" title="Zoom in" onClick={() => setZoom(z => Math.min(z + 0.1, 3))} className="px-2 py-2 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs">+</button>
-          <button aria-label="Zoom out" title="Zoom out" onClick={() => setZoom(z => Math.max(z - 0.1, 0.2))} className="px-2 py-2 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs">-</button>
-          <button aria-label="Reset zoom" title="Reset zoom" onClick={resetZoom} className="px-2 py-2 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs">⟳</button>
-          <button aria-label="Center tree" title="Center tree" onClick={() => {
-            const rect = treeContainerRef.current?.getBoundingClientRect();
-            if (rect) setTranslate({ x: rect.width / 2, y: 90 });
-          }} className="px-2 py-2 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs">◎</button>
-          <span className="px-2 py-1 text-[0.65rem] font-semibold rounded bg-purple-600 dark:bg-purple-500 text-white">{zoom.toFixed(2)}x</span>
+    <div className="min-h-screen bg-gray-50">
+      <Header
+        user={user}
+        onUpgrade={() => setShowUpgrade(true)}
+        onLogout={handleLogout}
+      />
+
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        <StatsCards user={user} members={members} />
+
+        {/* Add Root Member Button */}
+        <div className="mb-6">
+          <button
+            onClick={() => openAddModal(null)}
+            className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+          >
+            <Plus size={18} />
+            Add Root Member
+          </button>
         </div>
-        <button aria-label="Toggle dark mode" title={dark ? 'Switch to light mode' : 'Switch to dark mode'} onClick={toggleDark} className="px-2 py-2 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-xs">
-          {dark ? '☀️' : '🌙'}
-        </button>
-        {importError && <span className="text-xs text-red-600">{importError}</span>}
-      </div>
-      <div ref={treeContainerRef} className="flex-1 w-full border border-slate-300 dark:border-slate-700 rounded-md overflow-hidden bg-white dark:bg-slate-800 shadow-inner relative">
-        <Tree
-          data={tree as RawNodeDatum}
-          zoomable={true}
-          orientation="vertical"
-          translate={translate}
-          zoom={zoom}
-          onNodeClick={handleTreeNodeClick}
-          renderCustomNodeElement={(nodeInfo) => renderCustomNode(nodeInfo, handleCustomNodeClick)}
-        />
-        <NodeModal
-          currentName={node?.name}
-          existingSpouses={node && (node.attributes as any)?.spouseNames ? (node.attributes as any).spouseNames : []}
+
+        {/* Dashboard View */}
+        <DashboardView
+          familyRoot={familyRoot}
+          members={members}
+          searchTerm={searchTerm}
+          onSearchChange={setSearchTerm}
+          onEdit={editMember}
+          onDelete={deleteMember}
           onAddChild={handleAddChild}
-          onEditName={handleEditName}
-          onAddSpouse={handleAddSpouse}
-          onRemoveSpouse={handleRemoveSpouse}
-          onDelete={handleDeleteNode}
-          canDelete={Boolean(node && (tree as RawNodeDatum).attributes?.id !== node.attributes?.id)}
-          onClose={close}
-          isOpen={Boolean(node)}
+          onEditFamilyName={handleEditFamilyName}
         />
       </div>
+
+      {/* Modals */}
+      <MemberModal
+        isOpen={showAddModal}
+        isEdit={false}
+        members={members}
+        formData={formData}
+        selectedMember={null}
+        selectedParent={selectedParent}
+        onFormChange={setFormData}
+        onSave={addMember}
+        onClose={() => setShowAddModal(false)}
+      />
+
+      <MemberModal
+        isOpen={showEditModal}
+        isEdit={true}
+        members={members}
+        formData={formData}
+        selectedMember={selectedMember}
+        selectedParent={null}
+        onFormChange={setFormData}
+        onSave={updateMember}
+        onClose={() => setShowEditModal(false)}
+      />
+
+      {/* Family Name Modal */}
+      {showFamilyNameModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold">Edit Family Name</h2>
+              <button onClick={() => setShowFamilyNameModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X size={24} />
+              </button>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Family Name
+              </label>
+              <input
+                type="text"
+                value={tempFamilyName}
+                onChange={(e) => setTempFamilyName(e.target.value)}
+                placeholder="e.g., Smith Family"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-4">
+              <button
+                onClick={saveFamilyName}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setShowFamilyNameModal(false)}
+                className="px-6 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-export default App;
+export default FamilyTreeApp;
